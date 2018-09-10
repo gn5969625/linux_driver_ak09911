@@ -19,13 +19,14 @@
 #define AKM_09911_MAX_RANGE 8190
 static struct i2c_client *ak09911_client;
 typedef struct akm09911_data {
+       struct i2c_client *client;
        struct input_dev *input_dev;
        struct work_struct work;
        unsigned char asa[3]; //get Sensitivity Adjustment Values from fuse rom
        struct mutex lock;
        unsigned char mode;
 }akm09911_data;
-akm09911_data akm_data;
+static akm09911_data akm_data;
 
 static ssize_t ak09911_show(struct device *dev,struct device_attribute *attr, char *buf)
 {
@@ -35,9 +36,9 @@ static ssize_t ak09911_store(struct device *dev,struct device_attribute *attr, c
 {
 	return 0;
 }
-static DEVICE_ATTR(data, 0644 , ak09911_show, NULL);
+static DEVICE_ATTR(ak09911_data, 0644 , ak09911_show, NULL);
 static struct attribute *ak09911_attrs[] = {
-    &dev_attr_data.attr,
+    &dev_attr_ak09911_data.attr,
     NULL
 };
 static struct attribute_group mydrv_attr_group = {
@@ -116,6 +117,22 @@ static int ak09911_remove(struct i2c_client *i2c)
 	return 0;
 }
 
+static int akm09911_open(struct inode *inode, struct file *file)
+{
+        return 0;
+}
+
+static int akm09911_release(struct inode *inode, struct file *file)
+{
+        return 0;
+}
+
+static long akm09911_ioctl( struct file *file, unsigned int cmd,unsigned long arg) {
+
+
+        return 0;
+}
+
 static struct file_operations akm09911_fops = {
         .owner = THIS_MODULE,
         .open = akm09911_open,
@@ -161,4 +178,4 @@ module_i2c_driver(ak09911_driver);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Kevin.Shen");
 MODULE_DESCRIPTION("A i2c-ak09911 driver for testing module ");
-MODULE_VERSION("V1.0");
+MODULE_VERSION(DRV_VERSION);
