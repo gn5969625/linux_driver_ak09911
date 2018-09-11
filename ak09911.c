@@ -14,6 +14,10 @@
 #include <linux/delay.h>
 #include "ak09911.h"
 #include <linux/sysfs.h>
+#include <linux/input.h>
+#include <linux/slab.h>
+#include <linux/mutex.h>
+//#include <linux/mod_devicetable.h>
 #define DRV_VERSION "V2.0"
 
 #define AKM_09911_MAX_RANGE 8190
@@ -29,10 +33,10 @@
 // raw data convert to uT and multiple asa data to caculate the final data
 static long ak09911_raw_to_gauss(u16 asa)
 {
-        return (((long)data + 128) * 6000) / 256;
+        return (((long)asa + 128) * 6000) / 256;
 }
 
-static struct i2c_client *ak09911_client;
+//static struct i2c_client *ak09911_client;
 typedef struct akm09911_data {
        struct i2c_client *client;
        struct input_dev *input_dev;
@@ -46,7 +50,7 @@ typedef struct akm09911_data {
 static void set_akm09911_mode(akm09911_data *data,unsigned char mode) {
      int res;
      data->mode = mode;
-     rest = i2c_smbus_write_byte_data(data->client,AK09911_REG_CNTL2,data->mode);
+     res = i2c_smbus_write_byte_data(data->client,AK09911_REG_CNTL2,data->mode);
 }
 static int i2c_ak09911_read_len(struct i2c_client *client,unsigned char reg_addr,unsigned char len,unsigned char *buf)
 {
@@ -65,29 +69,41 @@ static int i2c_ak09911_read_len(struct i2c_client *client,unsigned char reg_addr
 }
 
 //static akm09911_data akm_data;
-void get_akm09911_raw_data(akm09911_data *data,unsigned char raw_data[]) {
+static void get_akm09911_raw_data(akm09911_data *data,unsigned char raw_data[]) {
      int ret;
      set_akm09911_mode(data,AK09911_MODE_SNG_MEASURE);
      do {
        ret = i2c_smbus_read_byte_data(data->client,AK09911_REG_ST2);
      }while(!(ret & AK09911_ST1_DRDY_MASK ));
-     i2c_ak09911_read_len(data->client,AK09911_REG_HXLsiAK09911_REG_HXL,6,raw_data);
-     
+     i2c_ak09911_read_len(data->client,AK09911_REG_HXL,6,raw_data);
 }
+
+static ssize_t ak09911_data_show(struct device *dev,struct device_attribute *attr, char *buf)
+{
+    unsigned char raw_buf[6];
+    akm09911_data *data = dev_get_drvdata(dev);
+    get_akm09911_raw_data(data,raw_buf);
+    return sprintf(buf,"x=%x,y=%x,z=%x\n",(raw_buf[1]<<8) | raw_buf[0],(raw_buf[3]<<8) | raw_buf[2], (raw_buf[5]<<8) | raw_buf[4]);
+}
+static DEVICE_ATTR(ak09911_data, 0644 , ak09911_data_show, NULL);
+
 static ssize_t ak09911_mode_show(struct device *dev,struct device_attribute *attr, char *buf)
 {
         akm09911_data *data = dev_get_drvdata(dev);
 	return sprintf(buf ,"mode = %x\n",data->mode);
 }
+
 static ssize_t ak09911_mode_store(struct device *dev,struct device_attribute *attr, const char *buf, size_t count)
 {
         akm09911_data *data = dev_get_drvdata(dev);
-        data->mode =  (unsigned char)simple_strtoul(buf,NULL, 0);
-	set_akm09911_mode(data,mode);
-        return 0;
+        data->mode =  (unsigned char)simple_strtoul(buf,NULL, 10);
+	set_akm09911_mode(data,data->mode);
+        return count;
 }
-static DEVICE_ATTR(ak09911_data, 0644 , ak09911_mode_show, ak09911_mode_show);
+
+static DEVICE_ATTR(ak09911_mode, 0644 , ak09911_mode_show, ak09911_mode_store);
 static struct attribute *ak09911_attrs[] = {
+    &dev_attr_ak09911_mode.attr,
     &dev_attr_ak09911_data.attr,
     NULL
 };
@@ -109,14 +125,15 @@ static void get_akm09911_asa(akm09911_data *data) {
      data->asa[1] = i2c_smbus_read_byte_data(data->client,AK09911_REG_ASAY);
      data->asa[2] = i2c_smbus_read_byte_data(data->client,AK09911_REG_ASAZ);
     
-     data->raw_to_gauss[0] = ak8963_09911_raw_to_gauss(data->asa[0]);
-     data->raw_to_gauss[1] = ak8963_09911_raw_to_gauss(data->asa[1]);
-     data->raw_to_gauss[2] = ak8963_09911_raw_to_gauss(data->asa[2]);
+     data->raw_to_gauss[0] = ak09911_raw_to_gauss(data->asa[0]);
+     data->raw_to_gauss[1] = ak09911_raw_to_gauss(data->asa[1]);
+     data->raw_to_gauss[2] = ak09911_raw_to_gauss(data->asa[2]);
      //return power dowm mode
      res = i2c_smbus_write_byte_data(data->client,AK09911_REG_CNTL2,AK09911_MODE_POWERDOWN);
 }
 static void set_ak09911_input_dev(akm09911_data *data) {
-        data->input_dev = input_alloc_device();
+        int res;
+        data->input_dev = input_allocate_device();
         set_bit(EV_ABS, data->input_dev->evbit);
         /* x-axis magnetic */
         input_set_abs_params(data->input_dev, ABS_X, -AKM_09911_MAX_RANGE, AKM_09911_MAX_RANGE, 0, 0);
@@ -129,17 +146,21 @@ static void set_ak09911_input_dev(akm09911_data *data) {
         res = input_register_device(data->input_dev);
 }
 static int ak09911_dev_init(akm09911_data *data) {
-	int res;
+	unsigned char res;
 	printk("%s called\n", __func__);
+        i2c_smbus_write_byte_data(data->client,AK09911_REG_CNTL3,AK09911_RESET_DATA_MASK);
+        mdelay(100);
+        set_akm09911_mode(data,AK09911_MODE_POWERDOWN);
+ 
 	res = i2c_smbus_read_byte_data(data->client, AK09911_REG_WIA1);
-        if(res < 0)
-	   return 0;
-        if(res == AK09911_WIA1_VALUE)
+        //if(res < 0)
+	//   return 0;
+        //if(res == AK09911_WIA1_VALUE)
             printk("%s,Campany ID:%x\n",__func__,res);
         res = i2c_smbus_read_byte_data(data->client, AK09911_REG_WIA2);
-	if(res < 0)
-           return 0;
-        if(res == AK09911_WIA2_VALUE)
+	//if(res < 0)
+        //   return 0;
+        //if(res == AK09911_WIA2_VALUE)
              printk("%s,Device ID:%x\n",__func__,res);
 
         get_akm09911_asa(data);
@@ -150,16 +171,24 @@ static int ak09911_dev_init(akm09911_data *data) {
 
 static int ak09911_probe(struct i2c_client *i2c, const struct i2c_device_id *id) {
 	int ret;
+        u8 wia_val[2];
         akm09911_data *data = NULL;
 	dev_dbg(&i2c->dev, "%s\n", __func__);
 	if (!i2c_check_functionality(i2c->adapter, I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL))
                 return -ENODEV;
 
 	dev_info(&i2c->dev, "chip found, driver version " DRV_VERSION "\n");
-        data = kzalloc(sizeof(akm09911),GFP_KERNEL);
-	ak09911_client = i2c;
-        data->clinet = i2c;
-        mutext_init(&data->lock);
+        data = kzalloc(sizeof(akm09911_data),GFP_KERNEL);
+	//ak09911_client = i2c;
+        data->client = i2c;
+        ret = i2c_smbus_read_i2c_block_data(i2c, AK09911_REG_WIA1,
+					    2, wia_val);
+	if (ret < 0) {
+		dev_err(&i2c->dev, "Error reading WIA\n");
+		return ret;
+	}
+        dev_dbg(&i2c->dev, "WIA %02x %02x\n", wia_val[0], wia_val[1]);
+        mutex_init(&data->lock);
 	ak09911_dev_init(data);
 	printk("ak09911 device component found!~\n");
 	ret = sysfs_create_group(&i2c->dev.kobj, &mydrv_attr_group);
@@ -170,7 +199,7 @@ static int ak09911_probe(struct i2c_client *i2c, const struct i2c_device_id *id)
 static int ak09911_remove(struct i2c_client *i2c) {
         akm09911_data *data = i2c_get_clientdata(i2c);
         input_unregister_device(data->input_dev);
-        input_free(data->input_dev);
+        input_free_device(data->input_dev);
         mutex_destroy(&data->lock);
         kfree(data);
 	sysfs_remove_group(&i2c->dev.kobj, &mydrv_attr_group);
@@ -202,12 +231,22 @@ static struct miscdevice akm09911_device = {
         .fops = &akm09911_fops,
 };
 */
+static const struct i2c_device_id ak09911_id[] = {  
+    { "ak09911",0},
+    {}
+};
+MODULE_DEVICE_TABLE(i2c, ak09911_id);
+
 static struct of_device_id ak09911_of_match[] = {
         { .compatible = "akm,ak09911" },
         { },
 };
+MODULE_DEVICE_TABLE(of, ak09911_of_match);
 
-struct i2c_driver ak09911_driver = {
+//static MODULE_DEVICE_TABLE(i2c, ak09911_of_match);
+
+
+static struct i2c_driver ak09911_driver = {
     .driver = {
         .name           = "ak09911",
         .owner          = THIS_MODULE,
@@ -215,8 +254,10 @@ struct i2c_driver ak09911_driver = {
     },
     .probe      = ak09911_probe,
     .remove     = ak09911_remove,
+    .id_table   = ak09911_id,
 };
 module_i2c_driver(ak09911_driver);
+
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Kevin.Shen");
 MODULE_DESCRIPTION("A i2c-ak09911 driver for testing module ");
